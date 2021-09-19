@@ -12,14 +12,16 @@
 int rede = 127;
 
 long tempo_espera = 5000;
+unsigned long long agora;
 
 String AP = "Arya";
 String PASS = "Got-061117";
 String HOST = "192.168.15.114";
 String PORT = "80";
 String Data = "";
+String dados = "";
 
-boolean DEBUG = false;
+boolean DEBUG = true;
 boolean found = false;
 
 int countTimeCommand;
@@ -45,6 +47,8 @@ void setup() {
             Serial.println("Conectando a " + AP);
         }
     }
+
+    horaAtual();
 
     pinMode(pin_lm35, INPUT);
     monitor_corrente.current(pin_corrente, 6.707);
@@ -80,8 +84,14 @@ void loop() {
     }
 
     double consumo = (potencia / 1000 / (3600 / (tempo_espera / 1000)));
-
-    String dados = String(potencia) + "," + String(temperatura) + "," + String(consumo, 8) + ",MedidorAvulso";
+    unsigned long tempo_enviar = millis();
+    agora += (tempo_enviar - inicio);
+    String dados =
+            String(potencia) + "," +
+            String(temperatura) + "," +
+            String(consumo, 8) +
+            ",MedidorAvulso," +
+            toString(agora);
 
     String uri = "http://" + HOST + ":" + PORT + "/api/v1/consumo?dados=" + dados;
 
@@ -98,11 +108,75 @@ void loop() {
     sendCommand(getData, 20, "OK", false);
 
     unsigned long fim = millis();
-    long espera = tempo_espera - (fim - inicio);
-    Serial.println(espera);
+    unsigned long espera = tempo_espera - (fim - inicio);
+    agora += (fim - tempo_enviar);
     if (espera > 0) {
         delay(espera);
     }
+}
+
+void horaAtual() {
+    String uri = "http://" + HOST + ":" + PORT + "/api/v1/data-hora";
+    String getData =
+            "GET " + uri + " HTTP/1.0\n" +
+            "Host: " + HOST + "\n" +
+            "\n";
+
+    sendCommand("AT+CIPMUX=1", 5, "OK", false);
+    sendCommand("AT+CIPSTART=4,\"TCP\",\"" + HOST + "\"," + PORT, 15, "OK", false);
+    sendCommand("AT+CIPSEND=4," + String(getData.length() + 4), 4, ">", false);
+
+    if (sendCommand(getData, 20, "OK", true)) {
+        unsigned long long y = 0;
+        int fim = dados.lastIndexOf(",CLOSED");
+        String agora_st = "";
+        for (int i = fim; i > 0; i--) {
+            if (!isDigit(dados.charAt(i))) {
+                if (dados.charAt(i) == '\n' and i < dados.length()) {
+                    agora_st = dados.substring(i, (fim - 1));
+                    i = 0;
+                }
+            }
+        }
+        dados = agora_st;
+        if (DEBUG) {
+            Serial.println(dados);
+        }
+        for (int i = 0; i < dados.length(); i++) {
+
+            if (DEBUG) {
+                Serial.println(toString(y));
+            }
+            char c = dados.charAt(i);
+
+            if (DEBUG) {
+                Serial.println(c);
+            }
+
+            y *= 10;
+            y += String(c).toInt();
+        }
+        if (DEBUG) {
+            Serial.println(toString(y));
+        }
+        agora = y;
+    }
+}
+
+String toString(long long input) {
+    String result = "";
+    uint8_t base = 10;
+    do {
+        char c = input % base;
+        input /= base;
+
+        if (c < 10)
+            c += '0';
+        else
+            c += 'A' - 10;
+        result = c + result;
+    } while (input);
+    return result;
 }
 
 bool ConnectToWifi() {
@@ -126,9 +200,12 @@ bool sendCommand(const String &command, int maxTime, char readReplay[], boolean 
     }
     while (countTimeCommand < (maxTime * 1)) {
         esp8266.println(command);
-        if (esp8266.find(readReplay))//ok
-        {
+        if (esp8266.find(readReplay)) {
             if (isGetData) {
+                dados = esp8266.readString();
+                if (DEBUG) {
+                    Serial.println(dados);
+                }
                 if (esp8266.find(readReplay)) {
                     if (DEBUG) {
                         Serial.println("Success : Request is taken from the server");
@@ -137,12 +214,16 @@ bool sendCommand(const String &command, int maxTime, char readReplay[], boolean 
                 while (esp8266.available()) {
                     char character = esp8266.read();
                     Data.concat(character);
+                    if (DEBUG) {
+                        Serial.println(Data);
+                    }
                     if (character == '\n') {
                         if (DEBUG) {
                             Serial.print("Received: ");
                             Serial.println(Data);
                         }
                         delay(50);
+                        dados = Data;
                         Data = "";
                     }
                 }
