@@ -138,10 +138,12 @@ void horaAtual() {
                 }
             }
         }
+
         dados = agora_st;
         if (DEBUG) {
             Serial.println(dados);
         }
+
         for (int i = 0; i < dados.length(); i++) {
 
             if (DEBUG) {
@@ -160,6 +162,7 @@ void horaAtual() {
             Serial.println(toString(y));
         }
         agora = y;
+        dados = "";
     }
 }
 
