@@ -11,8 +11,11 @@
 
 int rede = 127;
 
-long tempo_espera = 5000;
+long long tempo_espera = 5000;
+unsigned long long inicio;
 unsigned long long agora;
+unsigned long long antes;
+unsigned long long tempo_decorrido;
 
 String AP = "Arya";
 String PASS = "Got-061117";
@@ -20,11 +23,16 @@ String HOST = "192.168.15.114";
 String PORT = "80";
 String Data = "";
 String dados = "";
+double potencia_media;
+double temperatura_media;
 
 boolean DEBUG = true;
 boolean found = false;
+boolean enviou = true;
+boolean hora_sincronizada = false;
 
 int countTimeCommand;
+int count_n_enviou;
 
 EnergyMonitor monitor_corrente;
 EnergyMonitor monitor_ruido;
@@ -32,6 +40,7 @@ EnergyMonitor monitor_ruido;
 SoftwareSerial esp8266(rx_pin, Tx_pin);
 
 void setup() {
+    inicio = millis();
     Serial.begin(9600);
     Serial.println();
     Serial.println("Iniciando");
@@ -42,13 +51,8 @@ void setup() {
     delay(1000);
     esp8266.end();
     esp8266.begin(9600);
-    while (!ConnectToWifi()) {
-        if (DEBUG) {
-            Serial.println("Conectando a " + AP);
-        }
-    }
 
-    horaAtual();
+    connectToWifi();
 
     pinMode(pin_lm35, INPUT);
     monitor_corrente.current(pin_corrente, 6.707);
@@ -56,7 +60,10 @@ void setup() {
 }
 
 void loop() {
-    unsigned long inicio = millis();
+    unsigned long long inicio = millis();
+    if (DEBUG) {
+        Serial.println("Loop inicio");
+    }
 
     float temperatura = 0;
     for (int i = 0; i < 10; ++i) {
@@ -83,9 +90,26 @@ void loop() {
         potencia = 0;
     }
 
-    double consumo = (potencia / 1000 / (3600 / (tempo_espera / 1000)));
-    unsigned long tempo_enviar = millis();
+    unsigned long long tempo_enviar = millis();
     agora += (tempo_enviar - inicio);
+
+    if ((agora - antes) > tempo_espera) {
+        tempo_decorrido = agora - antes;
+    } else {
+        tempo_decorrido = tempo_espera;
+    }
+
+    if (enviou) {
+        potencia_media = potencia;
+        temperatura_media = temperatura;
+    } else {
+        potencia_media += potencia;
+        temperatura_media += temperatura;
+        potencia = potencia_media / (count_n_enviou + 1);
+        temperatura = temperatura_media / (count_n_enviou + 1);
+    }
+
+    double consumo = (potencia / 1000 / (3600 / (tempo_decorrido / 1000)));
     String dados =
             String(potencia) + "," +
             String(temperatura) + "," +
@@ -93,7 +117,7 @@ void loop() {
             ",MedidorAvulso," +
             toString(agora);
 
-    String uri = "http://" + HOST + ":" + PORT + "/api/v1/consumo?dados=" + dados;
+    String uri = "/api/v1/consumo?dados=" + dados;
 
     String getData =
             "POST " + uri + " HTTP/1.0\n" +
@@ -101,68 +125,110 @@ void loop() {
             "Connection: close\n" +
             "\n";
 
-    sendCommand("AT+CIPMUX=1", 5, "OK", false);
-    sendCommand("AT+CIPSTART=4,\"TCP\",\"" + HOST + "\"," + PORT, 15, "OK", false);
-    sendCommand("AT+CIPSEND=4," + String(getData.length() + 4), 4, ">", false);
+    if (!(hora_sincronizada &&
+          sendCommand("AT+CIPMUX=1", 5, "OK", false) &&
+          sendCommand("AT+CIPSTART=4,\"TCP\",\"" + HOST + "\"," + PORT, 2, "OK", false) &&
+          sendCommand("AT+CIPSEND=4," + String(getData.length() + 4), 4, ">", false) &&
+          sendCommand(getData, 20, "OK", false))) {
+        enviou = false;
+        count_n_enviou++;
+        checkWifiConnect();
+    } else {
+        enviou = true;
+        count_n_enviou = 0;
+        antes = agora;
+    }
 
-    sendCommand(getData, 20, "OK", false);
-
-    unsigned long fim = millis();
-    unsigned long espera = tempo_espera - (fim - inicio);
-    agora += (fim - tempo_enviar);
+    unsigned long long fim = millis();
+    long long espera = tempo_espera - (fim - inicio);
     if (espera > 0) {
         delay(espera);
+    }
+
+    if (DEBUG) {
+        Serial.println("Loop fim");
+    }
+
+    agora += (millis() - tempo_enviar);
+}
+
+bool checkWifiConnect() {
+
+    if (sendCommand("AT+CIPSTATUS=?", 5, "OK", true)) {
+        Serial.println("Dados: " + dados);
+        if (dados.lastIndexOf("WIFI DISCONNECT") > 0) {
+            if (DEBUG) {
+                Serial.println("Reconectando");
+            }
+            return connectToWifi();
+        } else {
+            if (!hora_sincronizada) {
+                horaAtual();
+            }
+            if (DEBUG) {
+                Serial.println("Conectado");
+            }
+        }
+        return true;
+    } else {
+        esp8266.end();
+        delay(1000);
+        esp8266.begin(115200);
+        sendCommand("AT", 5, "OK", false);
+        esp8266.println("AT+UART_DEF=9600,8,1,0,0");
+        delay(1000);
+        esp8266.end();
+        esp8266.begin(9600);
+        return connectToWifi();
     }
 }
 
 void horaAtual() {
-    String uri = "http://" + HOST + ":" + PORT + "/api/v1/data-hora";
+    String uri = "/api/v1/data-hora";
     String getData =
             "GET " + uri + " HTTP/1.0\n" +
             "Host: " + HOST + "\n" +
             "\n";
 
-    sendCommand("AT+CIPMUX=1", 5, "OK", false);
-    sendCommand("AT+CIPSTART=4,\"TCP\",\"" + HOST + "\"," + PORT, 15, "OK", false);
-    sendCommand("AT+CIPSEND=4," + String(getData.length() + 4), 4, ">", false);
-
-    if (sendCommand(getData, 20, "OK", true)) {
-        unsigned long long y = 0;
-        int fim = dados.lastIndexOf(",CLOSED");
-        String agora_st = "";
-        for (int i = fim; i > 0; i--) {
-            if (!isDigit(dados.charAt(i))) {
-                if (dados.charAt(i) == '\n' and i < dados.length()) {
-                    agora_st = dados.substring(i, (fim - 1));
-                    i = 0;
+    if (sendCommand("AT+CIPMUX=1", 5, "OK", false) &&
+        sendCommand("AT+CIPSTART=4,\"TCP\",\"" + HOST + "\"," + PORT, 2, "OK", false) &&
+        sendCommand("AT+CIPSEND=4," + String(getData.length() + 4), 4, ">", false)) {
+        if (sendCommand(getData, 20, "OK", true)) {
+            unsigned long long y = 0;
+            int fim = dados.lastIndexOf(",CLOSED");
+            if (fim > 0) {
+                String agora_st = "";
+                for (int i = fim; i > 0; i--) {
+                    if (!isDigit(dados.charAt(i))) {
+                        if (dados.charAt(i) == '\n' and i < dados.length()) {
+                            agora_st = dados.substring(i, (fim - 1));
+                            i = 0;
+                        }
+                    }
                 }
+
+                dados = agora_st;
+                if (DEBUG) {
+                    Serial.println(dados);
+                }
+
+                for (int i = 0; i < dados.length(); i++) {
+                    char c = dados.charAt(i);
+                    y *= 10;
+                    y += String(c).toInt();
+                }
+
+                if (DEBUG) {
+                    Serial.println(toString(y));
+                }
+                agora = y;
+                if (!hora_sincronizada) {
+                    antes = agora - (millis() - inicio);
+                }
+                hora_sincronizada = true;
             }
+            dados = "";
         }
-
-        dados = agora_st;
-        if (DEBUG) {
-            Serial.println(dados);
-        }
-
-        for (int i = 0; i < dados.length(); i++) {
-
-            if (DEBUG) {
-                Serial.println(toString(y));
-            }
-            char c = dados.charAt(i);
-
-            if (DEBUG) {
-                Serial.println(c);
-            }
-
-            y *= 10;
-            y += String(c).toInt();
-        }
-        if (DEBUG) {
-            Serial.println(toString(y));
-        }
-        agora = y;
-        dados = "";
     }
 }
 
@@ -182,15 +248,17 @@ String toString(long long input) {
     return result;
 }
 
-bool ConnectToWifi() {
-    for (int a = 0; a < 15; a++) {
-        sendCommand("AT", 5, "OK", false);
-        sendCommand("AT+CWMODE=1", 5, "OK", false);
-        boolean isConnected = sendCommand("AT+CWJAP=\"" + AP + "\",\"" + PASS + "\"", 20, "OK", false);
-        if (isConnected) {
-            return true;
-        }
+bool connectToWifi() {
+    if (DEBUG) {
+        Serial.println("Conectando a " + AP);
     }
+    sendCommand("AT", 5, "OK", false);
+    sendCommand("AT+CWMODE=1", 5, "OK", false);
+    boolean isConnected = sendCommand("AT+CWJAP=\"" + AP + "\",\"" + PASS + "\"", 20, "OK", false);
+    if (isConnected) {
+        horaAtual();
+    }
+    return isConnected;
 }
 
 bool sendCommand(const String &command, int maxTime, char readReplay[], boolean isGetData) {
