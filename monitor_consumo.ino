@@ -33,6 +33,7 @@ boolean hora_sincronizada = false;
 
 int countTimeCommand;
 int count_n_enviou;
+int count_n_sincronizou = 0;
 
 EnergyMonitor monitor_corrente;
 EnergyMonitor monitor_ruido;
@@ -68,7 +69,7 @@ void loop() {
     float temperatura = 0;
     for (int i = 0; i < 10; ++i) {
         float valor_analog_lm35 = float(analogRead(pin_lm35));
-        float tensao = (valor_analog_lm35 * 5) / 1023;
+        float tensao = (valor_analog_lm35 * 5) / 1024;
         temperatura += tensao * 100;
     }
     temperatura = temperatura / 10;
@@ -110,20 +111,23 @@ void loop() {
     }
 
     double consumo = (potencia / 1000 / (3600 / (tempo_decorrido / 1000)));
-    String dados =
-            String(potencia) + "," +
-            String(temperatura) + "," +
-            String(consumo, 8) +
-            ",MedidorAvulso," +
-            toString(agora);
+    String dados = String(potencia);
+    dados.concat(",");
+    dados.concat(String(temperatura));
+    dados.concat(",");
+    dados.concat(String(consumo, 8));
+    dados.concat(",SA,");
+    dados.concat(toString(agora));
+    dados.concat(",");
+    dados.concat(toString(tempo_decorrido));
 
     String uri = "/api/v1/consumo?dados=" + dados;
 
-    String getData =
-            "POST " + uri + " HTTP/1.0\n" +
-            "Host: " + HOST + "\n" +
-            "Connection: close\n" +
-            "\n";
+    String getData = "POST ";
+    getData.concat(uri);
+    getData.concat(" HTTP/1.1\nHost: ");
+    getData.concat(HOST);
+    getData.concat("\nConnection: close\n\n");
 
     if (!(hora_sincronizada &&
           sendCommand("AT+CIPMUX=1", 5, "OK", false) &&
@@ -168,12 +172,31 @@ bool checkWifiConnect() {
             if (DEBUG) {
                 Serial.println("Conectado");
             }
+            if (count_n_sincronizou >= 15 || (count_n_enviou % 100 == 0)) {
+                if (sendCommand("AT+CWQAP", 20, "OK", false)) {
+                    esp8266.end();
+                    delay(1000);
+                    esp8266.begin(115200);
+                    sendCommand("AT", 5, "OK", false);
+                    sendCommand("AT+RST", 5, "OK", false);
+                    sendCommand("AT", 5, "OK", false);
+                    esp8266.println("AT+UART_DEF=9600,8,1,0,0");
+                    delay(1000);
+                    esp8266.end();
+                    esp8266.begin(9600);
+                    if (connectToWifi()) {
+                        count_n_sincronizou = 0;
+                    }
+                }
+            }
         }
         return true;
     } else {
         esp8266.end();
         delay(1000);
         esp8266.begin(115200);
+        sendCommand("AT", 5, "OK", false);
+        sendCommand("AT+RST", 5, "OK", false);
         sendCommand("AT", 5, "OK", false);
         esp8266.println("AT+UART_DEF=9600,8,1,0,0");
         delay(1000);
@@ -226,9 +249,16 @@ void horaAtual() {
                     antes = agora - (millis() - inicio);
                 }
                 hora_sincronizada = true;
+                count_n_sincronizou = 0;
+            } else {
+                count_n_sincronizou++;
             }
             dados = "";
+        } else {
+            count_n_sincronizou++;
         }
+    } else {
+        count_n_sincronizou++;
     }
 }
 
